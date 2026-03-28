@@ -1,12 +1,21 @@
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import RedirectResponse
+from sqlalchemy import select
 import random
 import string
 
+from database import init_db, get_db
+from models import Link
 
-app = FastAPI()
-db = {}
+
+@asynccontextmanager
+async def lifespan(app):
+    await init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 
 class LinkCreate(BaseModel):
@@ -24,15 +33,18 @@ def hello():
 
 
 @app.post("/links")
-def create_link(data: LinkCreate):
+async def create_link(data: LinkCreate, db=Depends(get_db)):
     short_code = generate_short_code()
-    db[short_code] = data.original_url
+    link = Link(short_code=short_code, original_url=data.original_url)
+    db.add(link)
+    await db.commit()
     return {"original_url": data.original_url, "short_code": short_code}
 
 
 @app.get("/{short_code}")
-def redirect(short_code: str):
-    if short_code not in db:
+async def redirect(short_code: str, db=Depends(get_db)):
+    result = await db.execute(select(Link).where(Link.short_code == short_code))
+    link = result.scalar_one_or_none()
+    if link is None:
         raise HTTPException(status_code=404, detail="Link not found")
-    original_url = db[short_code]
-    return RedirectResponse(url=original_url)
+    return RedirectResponse(url=link.original_url)
