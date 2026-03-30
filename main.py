@@ -76,10 +76,30 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db))
 @app.post("/links")
 async def create_link(data: LinkCreate, db=Depends(get_db), current_user: User = Depends(get_current_user)):
     short_code = generate_short_code()
-    link = Link(short_code=short_code, original_url=data.original_url)
+    link = Link(short_code=short_code, original_url=data.original_url, owner_id=current_user.id)
     db.add(link)
     await db.commit()
     return {"original_url": data.original_url, "short_code": short_code}
+
+
+@app.get("/links")
+async def get_my_links(db=Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Link).where(Link.owner_id == current_user.id))
+    links = result.scalars().all()
+    return [{"short_code": l.short_code, "original_url": l.original_url, "click_count": l.click_count} for l in links]
+
+
+@app.delete("/links/{short_code}")
+async def delete_link(short_code: str, db=Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Link).where(Link.short_code == short_code))
+    link = result.scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Link not found")
+    if link.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your link")
+    await db.delete(link)
+    await db.commit()
+    return {"message": "Link deleted"}
 
 
 @app.get("/{short_code}")
@@ -88,4 +108,6 @@ async def redirect(short_code: str, db=Depends(get_db)):
     link = result.scalar_one_or_none()
     if link is None:
         raise HTTPException(status_code=404, detail="Link not found")
+    link.click_count += 1
+    await db.commit()
     return RedirectResponse(url=link.original_url)
